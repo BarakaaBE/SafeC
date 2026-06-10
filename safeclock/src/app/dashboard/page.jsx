@@ -3,6 +3,7 @@
 // Toutes les données statiques remplacées par des appels API réels
 
 "use client";
+jsexport const dynamic = "force-dynamic";
 
 import { useState, useEffect, useRef } from "react";
 import { useSession, signOut } from "next-auth/react";

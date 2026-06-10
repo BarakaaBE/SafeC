@@ -148,17 +148,16 @@ function Sidebar({ page, setPage, session }) {
   const items = [
     { id: "timer",     icon: "⏱", label: "Chronomètre" },
     { id: "timesheet", icon: "📋", label: "Feuilles de temps" },
-    { id: "projects",  icon: "📁", label: "Projets" },
+    { id: "leaves",    icon: "🏖", label: "Congés" },
     ...(isManager ? [
-      { id: "reports",  icon: "📊", label: "Rapports" },
-      { id: "team",     icon: "👥", label: "Équipe" },
-      { id: "approval", icon: "✅", label: "Approbation" },
+      { id: "projects",  icon: "📁", label: "Projets" },
+      { id: "reports",   icon: "📊", label: "Rapports" },
+      { id: "team",      icon: "👥", label: "Équipe" },
+      { id: "approval",  icon: "✅", label: "Approbation" },
     ] : []),
-    { id: "leaves",   icon: "🏖", label: "Congés" },
   ];
   const user = session?.user;
   const userColor = colorForName(user?.name);
-
   return (
     <div style={{ width: 200, background: C.panel, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
       <div style={{ padding: "20px 18px 16px", display: "flex", alignItems: "center", gap: 10 }}>
@@ -280,78 +279,246 @@ function TimerPage({ projects }) {
 }
 
 // ── Timesheet Page ────────────────────────────────────────────────
-function TimesheetPage() {
+function TimesheetPage({ projects }) {
   const [sheet, setSheet] = useState(null);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [month, setMonth] = useState(currentMonthKey());
+  // Lignes en cours d'édition : [{ projectId, description, days: {0:h,1:h,...6:h} }]
+  const [lines, setLines] = useState([]);
+  const [savingLines, setSavingLines] = useState(false);
 
-  useEffect(() => {
+  // Jours du mois sélectionné (Lu→Di par semaine)
+  const daysInMonth = (() => {
+    const [y, m] = month.split("-").map(Number);
+    const days = [];
+    const d = new Date(y, m - 1, 1);
+    while (d.getMonth() === m - 1) {
+      days.push(new Date(d));
+      d.setDate(d.getDate() + 1);
+    }
+    return days;
+  })();
+
+  const WEEKDAYS = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+
+  function loadSheet() {
     setLoading(true);
     apiFetch(`/api/timesheets?month=${month}`)
-      .then(setSheet)
+      .then(s => { setSheet(s); setLines([]); })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [month]);
+  }
+  useEffect(loadSheet, [month]);
 
-  async function submit() {
+  function addLine() {
+    setLines(l => [...l, { projectId: "", description: "", days: {} }]);
+  }
+  function updateLine(i, field, val) {
+    setLines(l => l.map((line, idx) => idx === i ? { ...line, [field]: val } : line));
+  }
+  function updateDay(lineIdx, dayIdx, val) {
+    const clamped = Math.min(24, Math.max(0, parseFloat(val) || 0));
+    setLines(l => l.map((line, idx) => idx === lineIdx ? { ...line, days: { ...line.days, [dayIdx]: clamped } } : line));
+  }
+  function removeLine(i) {
+    setLines(l => l.filter((_, idx) => idx !== i));
+  }
+
+  async function saveLines() {
+    const toSave = lines.filter(l => Object.values(l.days).some(h => h > 0));
+    if (!toSave.length) return;
+    setSavingLines(true);
+    try {
+      await Promise.all(toSave.flatMap(line =>
+        Object.entries(line.days)
+          .filter(([, h]) => h > 0)
+          .map(([dayIdx, hours]) => {
+            const date = daysInMonth[parseInt(dayIdx)];
+            const dateStr = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+            return apiFetch("/api/time-entries", {
+              method: "POST",
+              body: JSON.stringify({
+                projectId: line.projectId || null,
+                description: line.description || null,
+                hours,
+                date: dateStr,
+                source: "manual",
+              }),
+            });
+          })
+      ));
+      setLines([]);
+      loadSheet();
+    } catch (e) { alert(e.message); }
+    setSavingLines(false);
+  }
+
+  async function doAction(action, reason) {
     if (!sheet || acting) return;
     setActing(true);
     try {
-      const res = await apiFetch(`/api/timesheets/${sheet.id}/action`, { method: "POST", body: JSON.stringify({ action: "submit" }) });
-      setSheet(s => ({ ...s, status: res.status, totalHours: res.totalHours }));
+      if (action === "delete") {
+        await apiFetch(`/api/timesheets/${sheet.id}/action`, { method: "DELETE" });
+        setSheet(null);
+      } else {
+        const res = await apiFetch(`/api/timesheets/${sheet.id}/action`, {
+          method: "POST",
+          body: JSON.stringify({ action, reason }),
+        });
+        setSheet(s => ({ ...s, status: res.status, totalHours: res.totalHours ?? s.totalHours }));
+      }
     } catch (e) { alert(e.message); }
     setActing(false);
   }
 
   const statusStyle = {
-    DRAFT:     { label: "Brouillon",  color: C.muted  },
-    SUBMITTED: { label: "Soumis",     color: C.amber  },
-    APPROVED:  { label: "Approuvé",   color: C.accent },
-    REJECTED:  { label: "Refusé",     color: C.red    },
+    DRAFT:     { label: "Brouillon", color: C.muted  },
+    SUBMITTED: { label: "Soumis",    color: C.amber  },
+    APPROVED:  { label: "Approuvé",  color: C.accent },
+    REJECTED:  { label: "Refusé",    color: C.red    },
   };
 
-  // Grouper les entrées par date
+  // Grouper les entrées existantes par date
   const byDate = {};
   (sheet?.entries || []).forEach(e => {
     if (!byDate[e.date]) byDate[e.date] = [];
     byDate[e.date].push(e);
   });
 
+  const canEdit = !sheet || sheet.status === "DRAFT" || sheet.status === "REJECTED";
+
   return (
     <div style={{ padding: 28, flex: 1, overflowY: "auto" }}>
+      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
         <h1 style={{ color: C.text, fontSize: 20, fontWeight: 700 }}>Feuille de temps</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input type="month" value={month} onChange={e => setMonth(e.target.value)} style={{ padding: "7px 12px", borderRadius: 8, background: C.faint, border: `1px solid ${C.border}`, color: C.text, fontSize: 13, outline: "none", fontFamily: "inherit" }} />
-          {sheet?.status === "DRAFT" || sheet?.status === "REJECTED" ? (
-            <button onClick={submit} disabled={acting} style={{ padding: "7px 14px", borderRadius: 8, background: C.accent, border: "none", color: "#000", fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
-              {acting ? "Envoi…" : "Soumettre"}
-            </button>
-          ) : null}
+          <input type="month" value={month} onChange={e => setMonth(e.target.value)}
+            style={{ padding: "7px 12px", borderRadius: 8, background: C.faint, border: `1px solid ${C.border}`, color: C.text, fontSize: 13, outline: "none", fontFamily: "inherit" }} />
+          {sheet && (
+            <>
+              {sheet.status === "SUBMITTED" && (
+                <button onClick={() => doAction("unsubmit")} disabled={acting}
+                  style={{ padding: "7px 14px", borderRadius: 8, background: C.faint, border: `1px solid ${C.amber}40`, color: C.amber, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
+                  Annuler soumission
+                </button>
+              )}
+              {(sheet.status === "DRAFT" || sheet.status === "REJECTED") && (
+                <>
+                  <button onClick={() => doAction("delete")} disabled={acting}
+                    style={{ padding: "7px 14px", borderRadius: 8, background: C.faint, border: `1px solid ${C.red}40`, color: C.red, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
+                    Supprimer
+                  </button>
+                  <button onClick={() => doAction("submit")} disabled={acting || !sheet.entries?.length}
+                    style={{ padding: "7px 14px", borderRadius: 8, background: sheet.entries?.length ? C.accent : C.faint, border: "none", color: sheet.entries?.length ? "#000" : C.muted, fontWeight: 600, fontSize: 12, cursor: sheet.entries?.length ? "pointer" : "not-allowed" }}>
+                    {acting ? "Envoi…" : "Soumettre"}
+                  </button>
+                </>
+              )}
+            </>
+          )}
         </div>
       </div>
 
       {loading && <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{[1,2,3].map(i => <div key={i} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: 16 }}><Skeleton /></div>)}</div>}
 
-      {!loading && sheet && (
+      {!loading && (
         <>
-          {/* Statut + total */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 24 }}>
-            {[
-              { label: "Statut", val: statusStyle[sheet.status]?.label, color: statusStyle[sheet.status]?.color },
-              { label: "Total heures", val: fmtHours(sheet.totalHours || 0), color: C.text },
-              { label: "Entrées", val: sheet.entries?.length || 0, color: C.text },
-            ].map(s => (
-              <div key={s.label} style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px" }}>
-                <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>{s.label}</div>
-                <div style={{ color: s.color || C.text, fontSize: 22, fontWeight: 700 }}>{s.val}</div>
-              </div>
-            ))}
-          </div>
+          {/* Statut */}
+          {sheet && (
+            <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
+              {[
+                { label: "Statut", val: statusStyle[sheet.status]?.label, color: statusStyle[sheet.status]?.color },
+                { label: "Total heures", val: fmtHours(sheet.totalHours || 0), color: C.text },
+                { label: "Entrées", val: sheet.entries?.length || 0, color: C.text },
+              ].map(s => (
+                <div key={s.label} style={{ flex: 1, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px" }}>
+                  <div style={{ color: C.muted, fontSize: 12, marginBottom: 6 }}>{s.label}</div>
+                  <div style={{ color: s.color || C.text, fontSize: 20, fontWeight: 700 }}>{s.val}</div>
+                </div>
+              ))}
+            </div>
+          )}
 
-          {/* Entrées groupées par jour */}
-          {Object.keys(byDate).sort().reverse().map(date => (
+          {/* Message refus */}
+          {sheet?.status === "REJECTED" && sheet?.rejectedReason && (
+            <div style={{ marginBottom: 16, padding: "12px 16px", borderRadius: 10, background: C.red + "15", border: `1px solid ${C.red}40`, color: C.red, fontSize: 13 }}>
+              ⚠ Refusé : {sheet.rejectedReason}
+            </div>
+          )}
+
+          {/* Formulaire ajout de lignes */}
+          {canEdit && (
+            <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div style={{ color: C.text, fontSize: 14, fontWeight: 600 }}>Saisie des heures</div>
+                <button onClick={addLine} style={{ padding: "6px 14px", borderRadius: 8, background: C.accentDim, border: `1px solid ${C.accentBorder}`, color: C.accent, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Ajouter une ligne</button>
+              </div>
+
+              {lines.length === 0 && (
+                <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "16px 0" }}>
+                  Cliquez sur "+ Ajouter une ligne" pour saisir vos heures.
+                </div>
+              )}
+
+              {lines.map((line, li) => (
+                <div key={li} style={{ marginBottom: 16, padding: 16, background: C.faint, borderRadius: 10, border: `1px solid ${C.border}` }}>
+                  {/* Projet + description */}
+                  <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                    <select value={line.projectId} onChange={e => updateLine(li, "projectId", e.target.value)}
+                      style={{ flex: 1, padding: "8px 12px", borderRadius: 8, background: C.panel, border: `1px solid ${C.border}`, color: line.projectId ? C.text : C.muted, fontSize: 13, outline: "none", fontFamily: "inherit" }}>
+                      <option value="">— Projet (optionnel) —</option>
+                      {projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.client ? ` — ${p.client}` : ""}</option>)}
+                    </select>
+                    <input value={line.description} onChange={e => updateLine(li, "description", e.target.value)}
+                      placeholder="Description (optionnel)"
+                      style={{ flex: 1, padding: "8px 12px", borderRadius: 8, background: C.panel, border: `1px solid ${C.border}`, color: C.text, fontSize: 13, outline: "none", fontFamily: "inherit" }} />
+                    <button onClick={() => removeLine(li)} style={{ padding: "8px 10px", borderRadius: 8, background: "none", border: `1px solid ${C.red}40`, color: C.red, cursor: "pointer", fontSize: 14 }}>✕</button>
+                  </div>
+
+                  {/* Grille des jours */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+                    {daysInMonth.map((date, di) => {
+                      const dayName = WEEKDAYS[date.getDay()];
+                      const dayNum = date.getDate();
+                      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+                      const val = line.days[di] || "";
+                      return (
+                        <div key={di} style={{ textAlign: "center" }}>
+                          <div style={{ fontSize: 10, color: isWeekend ? C.red : C.muted, marginBottom: 3 }}>{dayName} {dayNum}</div>
+                          <input
+                            type="number" min="0" max="24" step="0.5"
+                            value={val}
+                            onChange={e => updateDay(li, di, e.target.value)}
+                            placeholder="0"
+                            style={{ width: "100%", padding: "5px 4px", borderRadius: 6, background: val > 0 ? C.accentDim : C.panel, border: `1px solid ${val > 0 ? C.accentBorder : C.border}`, color: val > 0 ? C.accent : C.muted, fontSize: 12, textAlign: "center", outline: "none", fontFamily: "inherit" }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Total de la ligne */}
+                  <div style={{ marginTop: 8, textAlign: "right", fontSize: 12, color: C.muted }}>
+                    Total : <span style={{ color: C.accent, fontWeight: 600 }}>{fmtHours(Object.values(line.days).reduce((a, b) => a + b, 0))}</span>
+                  </div>
+                </div>
+              ))}
+
+              {lines.length > 0 && (
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                  <button onClick={() => setLines([])} style={{ padding: "8px 14px", borderRadius: 8, background: C.faint, border: `1px solid ${C.border}`, color: C.muted, cursor: "pointer", fontSize: 13 }}>Annuler</button>
+                  <button onClick={saveLines} disabled={savingLines} style={{ padding: "8px 16px", borderRadius: 8, background: C.accent, border: "none", color: "#000", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+                    {savingLines ? "Enregistrement…" : "Enregistrer"}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Entrées existantes groupées par date */}
+          {sheet && Object.keys(byDate).sort().reverse().map(date => (
             <div key={date} style={{ marginBottom: 16 }}>
               <div style={{ color: C.muted, fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
                 {new Date(date + "T12:00:00").toLocaleDateString("fr-BE", { weekday: "long", day: "numeric", month: "long" })}
@@ -369,15 +536,9 @@ function TimesheetPage() {
             </div>
           ))}
 
-          {sheet.entries?.length === 0 && (
+          {!sheet && (
             <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: "40px 0" }}>
-              Aucune entrée pour ce mois. Utilisez le chronomètre pour enregistrer du temps.
-            </div>
-          )}
-
-          {sheet.status === "REJECTED" && sheet.rejectedReason && (
-            <div style={{ marginTop: 16, padding: "12px 16px", borderRadius: 10, background: C.red + "15", border: `1px solid ${C.red}40`, color: C.red, fontSize: 13 }}>
-              ⚠ Refusé : {sheet.rejectedReason}
+              Ajoutez une ligne ci-dessus pour créer votre feuille de temps.
             </div>
           )}
         </>
@@ -385,7 +546,6 @@ function TimesheetPage() {
     </div>
   );
 }
-
 // ── Projects Page ─────────────────────────────────────────────────
 function ProjectsPage({ projects, loading, onRefresh }) {
   const [showForm, setShowForm] = useState(false);
@@ -876,7 +1036,7 @@ export default function SafeClockApp() {
 
   const pageComponents = {
     timer:     <TimerPage projects={projects} />,
-    timesheet: <TimesheetPage />,
+    timesheet: <TimesheetPage projects={projects} />,
     projects:  <ProjectsPage projects={projects} loading={loadingProjects} onRefresh={loadProjects} />,
     reports:   isManager ? <ReportsPage /> : null,
     team:      isManager ? <TeamPage members={members} loading={loadingMembers} onRefresh={loadMembers} /> : null,

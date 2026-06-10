@@ -55,7 +55,7 @@ export default function LoginPage() {
 
         <div style={{ marginTop: 24, padding: "12px 14px", borderRadius: 8, background: C.accentDim, border: `1px solid ${C.accentBorder}` }}>
           <div style={{ color: C.accent, fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Comptes de démo</div>
-          {[{ label: "Owner", email: "alice@safeclock.app" }, { label: "Employé", email: "bob@safeclock.app" }].map(acc => (
+          {[{ label: "Owner", email: "alice@safeclock.be" }, { label: "Employé", email: "bob@safeclock.be" }].map(acc => (
             <button key={acc.email} onClick={() => { setEmail(acc.email); setPassword("demo1234"); }}
               style={{ display: "block", background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", textAlign: "left", padding: "2px 0", fontFamily: "inherit" }}>
               <span style={{ color: C.accent, marginRight: 6 }}>{acc.label}:</span>{acc.email}

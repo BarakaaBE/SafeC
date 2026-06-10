@@ -1,4 +1,4 @@
-jsx// src/app/dashboard/layout.jsx
+// src/app/dashboard/layout.jsx
 "use client";
 
 import { SessionProvider } from "next-auth/react";

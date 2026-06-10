@@ -1,9 +1,5 @@
-// safeclock-frontend.jsx
-// À placer dans : safeclock/src/app/dashboard/page.jsx  (ou page.tsx)
-// Toutes les données statiques remplacées par des appels API réels
-
 "use client";
-jsexport const dynamic = "force-dynamic";
+export const dynamic = "force-dynamic";
 
 import { useState, useEffect, useRef } from "react";
 import { useSession, signOut } from "next-auth/react";
